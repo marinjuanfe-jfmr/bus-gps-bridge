@@ -1,0 +1,283 @@
+{
+  "name": "Bus GPS Monitor",
+  "nodes": [
+    {
+      "id": "node-01",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [240, 400],
+      "webhookId": "bus-telegram-01",
+      "parameters": {
+        "updates": ["message"],
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REEMPLAZAR_ID_CREDENCIAL",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "id": "node-02",
+      "name": "Es link del bus?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [460, 400],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.message.text }}",
+              "operation": "contains",
+              "value2": "colfenixgps.co/share/"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-03",
+      "name": "Activar monitoreo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 280],
+      "parameters": {
+        "method": "POST",
+        "url": "https://REEMPLAZAR-URL-RENDER.onrender.com/start",
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $('Telegram Trigger').item.json.message.text }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node-04",
+      "name": "Confirmar activacion",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [900, 280],
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID_GRUPO",
+        "text": "✅ Monitoreo activo. Te aviso cuando el bus se acerque.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REEMPLAZAR_ID_CREDENCIAL",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "id": "node-05",
+      "name": "Es stop?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 520],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.message.text }}",
+              "operation": "equal",
+              "value2": "/stop"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-06",
+      "name": "Detener monitoreo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [900, 460],
+      "parameters": {
+        "method": "POST",
+        "url": "https://REEMPLAZAR-URL-RENDER.onrender.com/stop",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-07",
+      "name": "Confirmar detencion",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1120, 460],
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID_GRUPO",
+        "text": "🛑 Monitoreo detenido.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REEMPLAZAR_ID_CREDENCIAL",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "id": "node-08",
+      "name": "Alertas del bridge",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 820],
+      "webhookId": "bus-alert-01",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "bus-alert",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-09",
+      "name": "Tipo de alerta",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [460, 820],
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.body.action }}",
+        "rules": {
+          "rules": [
+            {"operation": "equal", "value2": "EARLY"},
+            {"operation": "equal", "value2": "NEAR"},
+            {"operation": "equal", "value2": "CRITICAL"},
+            {"operation": "equal", "value2": "DONE"}
+          ]
+        },
+        "fallbackOutput": "none"
+      }
+    },
+    {
+      "id": "node-15",
+      "name": "Bus en camino",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [680, 620],
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID_GRUPO",
+        "text": "🗺️ El bus está en camino hacia Jerónimo. Tienen unos 15 minutos.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REEMPLAZAR_ID_CREDENCIAL",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "id": "node-10",
+      "name": "Parada anterior",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [680, 780],
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID_GRUPO",
+        "text": "🚌 El bus está en la parada anterior a Jerónimo. ¡Bajen a portería ya!",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REEMPLAZAR_ID_CREDENCIAL",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "id": "node-12",
+      "name": "Aviso urgente",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [680, 940],
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID_GRUPO",
+        "text": "🚨 URGENTE: El bus está llegando. ¡BAJEN YA!",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REEMPLAZAR_ID_CREDENCIAL",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "id": "node-14",
+      "name": "Monitoreo finalizado",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [680, 1100],
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID_GRUPO",
+        "text": "✅ El bus ya pasó. Monitoreo finalizado.",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REEMPLAZAR_ID_CREDENCIAL",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [{"node": "Es link del bus?", "type": "main", "index": 0}]
+      ]
+    },
+    "Es link del bus?": {
+      "main": [
+        [{"node": "Activar monitoreo", "type": "main", "index": 0}],
+        [{"node": "Es stop?", "type": "main", "index": 0}]
+      ]
+    },
+    "Activar monitoreo": {
+      "main": [
+        [{"node": "Confirmar activacion", "type": "main", "index": 0}]
+      ]
+    },
+    "Es stop?": {
+      "main": [
+        [{"node": "Detener monitoreo", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "Detener monitoreo": {
+      "main": [
+        [{"node": "Confirmar detencion", "type": "main", "index": 0}]
+      ]
+    },
+    "Alertas del bridge": {
+      "main": [
+        [{"node": "Tipo de alerta", "type": "main", "index": 0}]
+      ]
+    },
+    "Tipo de alerta": {
+      "main": [
+        [{"node": "Bus en camino", "type": "main", "index": 0}],
+        [{"node": "Parada anterior", "type": "main", "index": 0}],
+        [{"node": "Aviso urgente", "type": "main", "index": 0}],
+        [{"node": "Monitoreo finalizado", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

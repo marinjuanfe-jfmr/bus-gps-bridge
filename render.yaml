@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: bus-gps-bridge
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app
+    envVars:
+      - key: N8N_WEBHOOK_URL
+        sync: false          # Lo pegas manualmente después de crear el webhook en N8N
+      - key: HOME_LAT
+        value: "4.646992"
+      - key: HOME_LON
+        value: "-74.108089"
