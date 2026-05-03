@@ -227,6 +227,13 @@ def _sinric_connect_loop():
 
         def on_message(ws, msg):
             print(f"[SINRIC] Mensaje recibido: {msg[:200]}")
+            try:
+                data = json.loads(msg)
+                if "timestamp" in data:
+                    ws.send(json.dumps({"timestamp": data["timestamp"]}))
+                    print("[SINRIC] Heartbeat respondido")
+            except Exception:
+                pass
 
         def on_error(ws, err):
             print(f"[SINRIC] Error WebSocket: {err}")
