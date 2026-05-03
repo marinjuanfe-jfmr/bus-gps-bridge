@@ -1,9 +1,12 @@
+import hashlib
+import hmac as _hmac
 import json
 import math
 import os
 import re
 import ssl
 import threading
+import time
 from datetime import datetime, timezone, timedelta
 
 import paho.mqtt.client as mqtt
@@ -148,6 +151,120 @@ def notify_n8n(action, distance_m, waypoint_name=""):
         print(f"[ERROR] Fallo al notificar N8N: {exc}")
 
 
+# ── SinricPro (Alexa via WebSocket) ───────────────────────────────────────────
+SINRIC_APP_KEY    = os.environ.get("SINRIC_APP_KEY", "")
+SINRIC_APP_SECRET = os.environ.get("SINRIC_APP_SECRET", "")
+SINRIC_DEVICES    = {
+    "EARLY":    os.environ.get("SINRIC_DEVICE_EARLY", ""),
+    "NEAR":     os.environ.get("SINRIC_DEVICE_NEAR", ""),
+    "CRITICAL": os.environ.get("SINRIC_DEVICE_CRITICAL", ""),
+}
+
+_sinric_ws   = None
+_sinric_lock = threading.Lock()
+
+
+def _sinric_sign(payload_dict):
+    payload_str = json.dumps(payload_dict, separators=(",", ":"), sort_keys=True)
+    return _hmac.new(
+        SINRIC_APP_SECRET.encode(),
+        payload_str.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def sinric_motion(device_id, motion=True):
+    """Envía evento de movimiento a SinricPro → dispara rutina de Alexa."""
+    global _sinric_ws
+    if not (SINRIC_APP_KEY and SINRIC_APP_SECRET and device_id):
+        return
+    payload = {
+        "action":       "motion",
+        "clientId":     SINRIC_APP_KEY,
+        "createdAt":    int(time.time()),
+        "deviceId":     device_id,
+        "reachability": True,
+        "type":         "event",
+        "value":        {"motion": motion},
+    }
+    message = json.dumps({
+        "payloadVersion":   2,
+        "signatureVersion": 1,
+        "signature":        {"HMAC": _sinric_sign(payload)},
+        "payload":          payload,
+    })
+    with _sinric_lock:
+        ws = _sinric_ws
+    if ws:
+        try:
+            ws.send(message)
+            print(f"[SINRIC] Movimiento {'detectado' if motion else 'reset'}: {device_id}")
+        except Exception as exc:
+            print(f"[SINRIC] Error enviando evento: {exc}")
+    else:
+        print("[SINRIC] WebSocket no conectado aún")
+
+
+def _sinric_connect_loop():
+    """Hilo daemon que mantiene la conexión WebSocket con SinricPro."""
+    import websocket as _wslib
+
+    if not (SINRIC_APP_KEY and SINRIC_APP_SECRET):
+        print("[SINRIC] Credenciales no configuradas — Alexa desactivado")
+        return
+
+    all_ids = ",".join(v for v in SINRIC_DEVICES.values() if v)
+    print(f"[SINRIC] Iniciando conexión | devices={all_ids}")
+
+    while True:
+        global _sinric_ws
+
+        def on_open(ws):
+            global _sinric_ws
+            with _sinric_lock:
+                _sinric_ws = ws
+            print("[SINRIC] WebSocket conectado ✓")
+
+        def on_message(ws, msg):
+            pass  # acks y heartbeats de SinricPro — ignorar
+
+        def on_error(ws, err):
+            print(f"[SINRIC] Error WebSocket: {err}")
+
+        def on_close(ws, code, msg):
+            global _sinric_ws
+            with _sinric_lock:
+                _sinric_ws = None
+            print(f"[SINRIC] Desconectado ({code})")
+
+        try:
+            ws = _wslib.WebSocketApp(
+                "wss://ws.sinric.pro",
+                header={
+                    "appkey":     SINRIC_APP_KEY,
+                    "deviceids":  all_ids,
+                    "platform":   "Python",
+                    "sdkversion": "2.0.0",
+                },
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
+            )
+            ws.run_forever(ping_interval=60, ping_timeout=10)
+        except Exception as exc:
+            print(f"[SINRIC] Excepción: {exc}")
+
+        with _sinric_lock:
+            _sinric_ws = None
+        print("[SINRIC] Reconectando en 15s...")
+        time.sleep(15)
+
+
+# Iniciar conexión con SinricPro al arrancar el servidor
+threading.Thread(target=_sinric_connect_loop, daemon=True).start()
+
+
 # ── Lógica MQTT ────────────────────────────────────────────────────────────────
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
@@ -219,6 +336,15 @@ def _transition(new_state, dist, waypoint_name):
         state["alert_state"] = new_state
     print(f"[ALERT] → {new_state} ({dist:.0f}m) @ {waypoint_name}")
     notify_n8n(new_state, dist, waypoint_name)
+
+    # ── Alexa via SinricPro ────────────────────────────────────────────────
+    device_id = SINRIC_DEVICES.get(new_state, "")
+    if device_id:
+        def _alexa_trigger():
+            sinric_motion(device_id, motion=True)
+            time.sleep(5)
+            sinric_motion(device_id, motion=False)  # reset para próxima vez
+        threading.Thread(target=_alexa_trigger, daemon=True).start()
 
 
 def on_disconnect(client, userdata, flags, reason_code, properties=None):
@@ -294,6 +420,7 @@ def status():
         route  = state["route"]
     route_wps   = ROUTES.get(route, [])
     next_wp     = route_wps[wp_idx]["name"] if wp_idx < len(route_wps) else "—"
+    sinric_ok   = _sinric_ws is not None
     return jsonify({
         "active":          state["active"],
         "alert_state":     state["alert_state"],
@@ -301,6 +428,7 @@ def status():
         "next_waypoint":   next_wp,
         "waypoint_index":  wp_idx,
         "url":             state["share_url"],
+        "alexa_connected": sinric_ok,
     })
 
 
