@@ -172,26 +172,33 @@ def _sinric_login():
         print("[SINRIC] Sin credenciales (SINRIC_EMAIL / SINRIC_PASSWORD)")
         return None
     try:
+        # SinricPro usa HTTP Basic Auth; el JWT viene en el header Authorization
+        # de la respuesta (no en el body)
         resp = requests.post(
             "https://portal.sinric.pro/api/v1/auth",
-            json={"email": SINRIC_EMAIL, "password": SINRIC_PASSWORD},
+            auth=(SINRIC_EMAIL, SINRIC_PASSWORD),
             timeout=15,
         )
         resp.raise_for_status()
-        body = resp.json()
-        # El token puede estar en distintos campos según versión de API
-        token = (
-            body.get("token")
-            or body.get("accessToken")
-            or (body.get("data") or {}).get("token")
-        )
+        # JWT en header de respuesta: "Bearer <token>"
+        auth_header = resp.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[len("Bearer "):]
+        else:
+            # fallback: buscar en el body
+            body = resp.json()
+            token = (
+                body.get("token")
+                or body.get("accessToken")
+                or (body.get("data") or {}).get("token")
+            )
         if token:
             with _sinric_jwt_lock:
                 _sinric_jwt      = token
                 _sinric_jwt_time = time.time()
             print("[SINRIC] Login OK — JWT obtenido ✓")
             return token
-        print(f"[SINRIC] Login: respuesta inesperada: {resp.text[:300]}")
+        print(f"[SINRIC] Login: JWT no encontrado. Status={resp.status_code}")
     except Exception as exc:
         print(f"[SINRIC] Login fallido: {exc}")
     return None
