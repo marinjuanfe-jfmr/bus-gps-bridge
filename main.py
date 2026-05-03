@@ -1,5 +1,3 @@
-import hashlib
-import hmac as _hmac
 import json
 import math
 import os
@@ -7,6 +5,7 @@ import re
 import ssl
 import threading
 import time
+import uuid as _uuid
 from datetime import datetime, timezone, timedelta
 
 import paho.mqtt.client as mqtt
@@ -151,137 +150,115 @@ def notify_n8n(action, distance_m, waypoint_name=""):
         print(f"[ERROR] Fallo al notificar N8N: {exc}")
 
 
-# ── SinricPro (Alexa via WebSocket) ───────────────────────────────────────────
-SINRIC_APP_KEY    = os.environ.get("SINRIC_APP_KEY", "")
-SINRIC_APP_SECRET = os.environ.get("SINRIC_APP_SECRET", "")
-SINRIC_DEVICES    = {
+# ── SinricPro (Alexa via Portal API) ─────────────────────────────────────────
+SINRIC_EMAIL   = os.environ.get("SINRIC_EMAIL", "")
+SINRIC_PASSWORD = os.environ.get("SINRIC_PASSWORD", "")
+SINRIC_DEVICES = {
     "EARLY":    os.environ.get("SINRIC_DEVICE_EARLY", ""),
     "NEAR":     os.environ.get("SINRIC_DEVICE_NEAR", ""),
     "CRITICAL": os.environ.get("SINRIC_DEVICE_CRITICAL", ""),
 }
 
-_sinric_ws   = None
-_sinric_lock = threading.Lock()
+_sinric_jwt       = None
+_sinric_jwt_time  = 0
+_sinric_jwt_lock  = threading.Lock()
+JWT_TTL_SECS      = 6 * 24 * 3600   # refrescar tras 6 días (JWT dura 7)
 
 
-def _sinric_sign(payload_dict):
-    # Separadores por defecto (con espacios) igual que el SDK oficial de SinricPro
-    payload_str = json.dumps(payload_dict)
-    return _hmac.new(
-        SINRIC_APP_SECRET.encode(),
-        payload_str.encode(),
-        hashlib.sha256,
-    ).hexdigest()
+def _sinric_login():
+    """Login en portal SinricPro → obtiene JWT. Devuelve token o None."""
+    global _sinric_jwt, _sinric_jwt_time
+    if not (SINRIC_EMAIL and SINRIC_PASSWORD):
+        print("[SINRIC] Sin credenciales (SINRIC_EMAIL / SINRIC_PASSWORD)")
+        return None
+    try:
+        resp = requests.post(
+            "https://portal.sinric.pro/api/v1/auth",
+            json={"email": SINRIC_EMAIL, "password": SINRIC_PASSWORD},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        # El token puede estar en distintos campos según versión de API
+        token = (
+            body.get("token")
+            or body.get("accessToken")
+            or (body.get("data") or {}).get("token")
+        )
+        if token:
+            with _sinric_jwt_lock:
+                _sinric_jwt      = token
+                _sinric_jwt_time = time.time()
+            print("[SINRIC] Login OK — JWT obtenido ✓")
+            return token
+        print(f"[SINRIC] Login: respuesta inesperada: {resp.text[:300]}")
+    except Exception as exc:
+        print(f"[SINRIC] Login fallido: {exc}")
+    return None
 
 
-def sinric_motion(device_id, motion=True):
-    """Envía evento de movimiento a SinricPro → dispara rutina de Alexa."""
-    global _sinric_ws
-    if not (SINRIC_APP_KEY and SINRIC_APP_SECRET and device_id):
+def _invalidate_sinric_jwt():
+    global _sinric_jwt, _sinric_jwt_time
+    with _sinric_jwt_lock:
+        _sinric_jwt      = None
+        _sinric_jwt_time = 0
+
+
+def _get_sinric_jwt():
+    """Devuelve JWT válido; hace login si falta o está por expirar."""
+    with _sinric_jwt_lock:
+        jwt = _sinric_jwt
+        age = time.time() - _sinric_jwt_time
+    if jwt and age < JWT_TTL_SECS:
+        return jwt
+    return _sinric_login()
+
+
+def sinric_trigger(device_id, detected=True):
+    """Dispara evento de movimiento en SinricPro via portal API → rutina Alexa."""
+    if not device_id:
         return
-    payload = {
-        "action":           "motion",
-        "clientId":         SINRIC_APP_KEY,
-        "createdAt":        int(time.time()),
-        "deviceAttributes": [],
-        "deviceId":         device_id,
-        "reachability":     True,
-        "type":             "event",
-        "value":            {"motion": motion},
+    jwt = _get_sinric_jwt()
+    if not jwt:
+        print(f"[SINRIC] Sin JWT — no se puede disparar dispositivo {device_id}")
+        return
+
+    value = '{"state":"detected"}' if detected else '{"state":"not detected"}'
+    params = {
+        "clientId":  "portal",
+        "messageId": str(_uuid.uuid4()),
+        "type":      "event",
+        "action":    "motion",
+        "createdAt": int(time.time()),
+        "value":     value,
     }
-    message = json.dumps({
-        "payloadVersion":   2,
-        "signatureVersion": 1,
-        "signature":        {"HMAC": _sinric_sign(payload)},
-        "payload":          payload,
-    })
-    with _sinric_lock:
-        ws = _sinric_ws
-    if ws:
-        try:
-            ws.send(message)
-            print(f"[SINRIC] Enviado: {message[:300]}")
-        except Exception as exc:
-            print(f"[SINRIC] Error enviando evento: {exc}")
-    else:
-        print("[SINRIC] WebSocket no conectado aún")
+    headers = {"Authorization": f"Bearer {jwt}"}
 
-
-def _sinric_connect_loop():
-    """Hilo daemon que mantiene la conexión WebSocket con SinricPro."""
-    import websocket as _wslib
-
-    if not (SINRIC_APP_KEY and SINRIC_APP_SECRET):
-        print("[SINRIC] Credenciales no configuradas — Alexa desactivado")
-        return
-
-    all_ids = ",".join(v for v in SINRIC_DEVICES.values() if v)
-    print(f"[SINRIC] Iniciando conexión | devices={all_ids}")
-
-    while True:
-        global _sinric_ws
-
-        def on_open(ws):
-            global _sinric_ws
-            with _sinric_lock:
-                _sinric_ws = ws
-            print("[SINRIC] WebSocket conectado ✓")
-
-        def on_message(ws, msg):
-            print(f"[SINRIC] Mensaje recibido: {msg[:200]}")
-            try:
-                data = json.loads(msg)
-                if "timestamp" in data:
-                    ws.send(json.dumps({"timestamp": data["timestamp"]}))
-                    print("[SINRIC] Heartbeat respondido")
-            except Exception:
-                pass
-
-        def on_error(ws, err):
-            print(f"[SINRIC] Error WebSocket: {err}")
-
-        def on_close(ws, code, msg):
-            global _sinric_ws
-            with _sinric_lock:
-                _sinric_ws = None
-            print(f"[SINRIC] Desconectado ({code})")
-
-        try:
-            ws = _wslib.WebSocketApp(
-                "wss://ws.sinric.pro",
-                header={
-                    "appkey":     SINRIC_APP_KEY,
-                    "deviceids":  all_ids,
-                    "platform":   "Python",
-                    "sdkversion": "2.0.0",
-                },
-                on_open=on_open,
-                on_message=on_message,
-                on_error=on_error,
-                on_close=on_close,
-            )
-            ws.run_forever(ping_interval=60, ping_timeout=10)
-        except Exception as exc:
-            print(f"[SINRIC] Excepción: {exc}")
-
-        with _sinric_lock:
-            _sinric_ws = None
-        print("[SINRIC] Reconectando en 15s...")
-        time.sleep(15)
-
-
-_sinric_thread_started = False
-_sinric_thread_lock    = threading.Lock()
-
-def _ensure_sinric_started():
-    """Arranca el thread de SinricPro en el worker de Gunicorn (evita problema de fork)."""
-    global _sinric_thread_started
-    if not _sinric_thread_started:
-        with _sinric_thread_lock:
-            if not _sinric_thread_started:
-                _sinric_thread_started = True
-                threading.Thread(target=_sinric_connect_loop, daemon=True).start()
-                print("[SINRIC] Thread iniciado en worker")
+    try:
+        resp = requests.get(
+            f"https://portal.sinric.pro/api/v1/devices/{device_id}/action",
+            params=params,
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code == 401:
+            # JWT expirado — invalidar caché, refrescar y reintentar una vez
+            print("[SINRIC] 401 — JWT expirado, refrescando...")
+            _invalidate_sinric_jwt()
+            jwt = _sinric_login()
+            if jwt:
+                headers = {"Authorization": f"Bearer {jwt}"}
+                params["messageId"] = str(_uuid.uuid4())
+                resp = requests.get(
+                    f"https://portal.sinric.pro/api/v1/devices/{device_id}/action",
+                    params=params,
+                    headers=headers,
+                    timeout=10,
+                )
+        state_str = "DETECTED" if detected else "CLEAR"
+        print(f"[SINRIC] Portal {state_str} → {resp.status_code} {resp.text[:120]}")
+    except Exception as exc:
+        print(f"[SINRIC] Portal API error: {exc}")
 
 
 # ── Lógica MQTT ────────────────────────────────────────────────────────────────
@@ -360,9 +337,9 @@ def _transition(new_state, dist, waypoint_name):
     device_id = SINRIC_DEVICES.get(new_state, "")
     if device_id:
         def _alexa_trigger():
-            sinric_motion(device_id, motion=True)
+            sinric_trigger(device_id, detected=True)
             time.sleep(5)
-            sinric_motion(device_id, motion=False)  # reset para próxima vez
+            sinric_trigger(device_id, detected=False)  # reset para próxima vez
         threading.Thread(target=_alexa_trigger, daemon=True).start()
 
 
@@ -427,11 +404,6 @@ def stop_monitoring():
 
 # ── Endpoints Flask ────────────────────────────────────────────────────────────
 
-@app.before_request
-def before_request():
-    _ensure_sinric_started()
-
-
 @app.route("/health", methods=["GET"])
 def health():
     return "OK", 200
@@ -444,15 +416,16 @@ def status():
         route  = state["route"]
     route_wps   = ROUTES.get(route, [])
     next_wp     = route_wps[wp_idx]["name"] if wp_idx < len(route_wps) else "—"
-    sinric_ok   = _sinric_ws is not None
+    with _sinric_jwt_lock:
+        sinric_ok = _sinric_jwt is not None
     return jsonify({
-        "active":          state["active"],
-        "alert_state":     state["alert_state"],
-        "route":           route,
-        "next_waypoint":   next_wp,
-        "waypoint_index":  wp_idx,
-        "url":             state["share_url"],
-        "alexa_connected": sinric_ok,
+        "active":         state["active"],
+        "alert_state":    state["alert_state"],
+        "route":          route,
+        "next_waypoint":  next_wp,
+        "waypoint_index": wp_idx,
+        "url":            state["share_url"],
+        "alexa_jwt_ok":   sinric_ok,
     })
 
 
@@ -493,11 +466,11 @@ def test_alexa(action):
     """Prueba manual: /test-alexa/EARLY  /test-alexa/NEAR  /test-alexa/CRITICAL"""
     device_id = SINRIC_DEVICES.get(action.upper(), "")
     if not device_id:
-        return jsonify({"error": f"Acción inválida. Usa EARLY, NEAR o CRITICAL"}), 400
+        return jsonify({"error": "Acción inválida. Usa EARLY, NEAR o CRITICAL"}), 400
     def _trigger():
-        sinric_motion(device_id, motion=True)
+        sinric_trigger(device_id, detected=True)
         time.sleep(5)
-        sinric_motion(device_id, motion=False)
+        sinric_trigger(device_id, detected=False)
     threading.Thread(target=_trigger, daemon=True).start()
     return jsonify({"status": "disparado", "action": action.upper(), "device": device_id})
 
