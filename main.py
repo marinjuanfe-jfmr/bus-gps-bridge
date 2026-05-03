@@ -268,8 +268,18 @@ def _sinric_connect_loop():
         time.sleep(15)
 
 
-# Iniciar conexión con SinricPro al arrancar el servidor
-threading.Thread(target=_sinric_connect_loop, daemon=True).start()
+_sinric_thread_started = False
+_sinric_thread_lock    = threading.Lock()
+
+def _ensure_sinric_started():
+    """Arranca el thread de SinricPro en el worker de Gunicorn (evita problema de fork)."""
+    global _sinric_thread_started
+    if not _sinric_thread_started:
+        with _sinric_thread_lock:
+            if not _sinric_thread_started:
+                _sinric_thread_started = True
+                threading.Thread(target=_sinric_connect_loop, daemon=True).start()
+                print("[SINRIC] Thread iniciado en worker")
 
 
 # ── Lógica MQTT ────────────────────────────────────────────────────────────────
@@ -414,6 +424,11 @@ def stop_monitoring():
 
 
 # ── Endpoints Flask ────────────────────────────────────────────────────────────
+
+@app.before_request
+def before_request():
+    _ensure_sinric_started()
+
 
 @app.route("/health", methods=["GET"])
 def health():
