@@ -464,6 +464,20 @@ def api_stop():
     return jsonify({"status": "stopped"})
 
 
+@app.route("/test-alexa/<action>", methods=["GET"])
+def test_alexa(action):
+    """Prueba manual: /test-alexa/EARLY  /test-alexa/NEAR  /test-alexa/CRITICAL"""
+    device_id = SINRIC_DEVICES.get(action.upper(), "")
+    if not device_id:
+        return jsonify({"error": f"Acción inválida. Usa EARLY, NEAR o CRITICAL"}), 400
+    def _trigger():
+        sinric_motion(device_id, motion=True)
+        time.sleep(5)
+        sinric_motion(device_id, motion=False)
+    threading.Thread(target=_trigger, daemon=True).start()
+    return jsonify({"status": "disparado", "action": action.upper(), "device": device_id})
+
+
 # ── Arranque ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
