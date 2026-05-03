@@ -470,7 +470,7 @@ def api_stop():
 
 @app.route("/test-alexa/<action>", methods=["GET"])
 def test_alexa(action):
-    """Prueba manual: /test-alexa/EARLY  /test-alexa/NEAR  /test-alexa/CRITICAL"""
+    """Prueba solo Alexa: /test-alexa/EARLY  /test-alexa/NEAR  /test-alexa/CRITICAL"""
     device_id = SINRIC_DEVICES.get(action.upper(), "")
     if not device_id:
         return jsonify({"error": "Acción inválida. Usa EARLY, NEAR o CRITICAL"}), 400
@@ -480,6 +480,22 @@ def test_alexa(action):
         sinric_trigger(device_id, detected=False)
     threading.Thread(target=_trigger, daemon=True).start()
     return jsonify({"status": "disparado", "action": action.upper(), "device": device_id})
+
+
+@app.route("/test-alert/<action>", methods=["GET"])
+def test_alert(action):
+    """Prueba completa (Telegram + Alexa): /test-alert/EARLY  /NEAR  /CRITICAL  /DONE"""
+    valid = {"EARLY", "NEAR", "CRITICAL", "DONE"}
+    action = action.upper()
+    if action not in valid:
+        return jsonify({"error": f"Acción inválida. Usa: {', '.join(valid)}"}), 400
+    # Usa exactamente el mismo código que cuando el bus pasa por un waypoint real
+    threading.Thread(
+        target=_transition,
+        args=(action, 300, "test"),
+        daemon=True,
+    ).start()
+    return jsonify({"status": "disparado", "action": action, "note": "Telegram + Alexa en camino"})
 
 
 # ── Arranque ───────────────────────────────────────────────────────────────────
