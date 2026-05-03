@@ -198,7 +198,7 @@ def sinric_motion(device_id, motion=True):
     if ws:
         try:
             ws.send(message)
-            print(f"[SINRIC] Movimiento {'detectado' if motion else 'reset'}: {device_id}")
+            print(f"[SINRIC] Enviado: {message[:300]}")
         except Exception as exc:
             print(f"[SINRIC] Error enviando evento: {exc}")
     else:
@@ -226,7 +226,7 @@ def _sinric_connect_loop():
             print("[SINRIC] WebSocket conectado ✓")
 
         def on_message(ws, msg):
-            pass  # acks y heartbeats de SinricPro — ignorar
+            print(f"[SINRIC] Mensaje recibido: {msg[:200]}")
 
         def on_error(ws, err):
             print(f"[SINRIC] Error WebSocket: {err}")
