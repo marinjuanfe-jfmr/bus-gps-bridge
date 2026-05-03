@@ -165,7 +165,8 @@ _sinric_lock = threading.Lock()
 
 
 def _sinric_sign(payload_dict):
-    payload_str = json.dumps(payload_dict, separators=(",", ":"), sort_keys=True)
+    # Sin sort_keys — SinricPro firma en orden de inserción, igual que el SDK oficial
+    payload_str = json.dumps(payload_dict, separators=(",", ":"))
     return _hmac.new(
         SINRIC_APP_SECRET.encode(),
         payload_str.encode(),
@@ -179,13 +180,14 @@ def sinric_motion(device_id, motion=True):
     if not (SINRIC_APP_KEY and SINRIC_APP_SECRET and device_id):
         return
     payload = {
-        "action":       "motion",
-        "clientId":     SINRIC_APP_KEY,
-        "createdAt":    int(time.time()),
-        "deviceId":     device_id,
-        "reachability": True,
-        "type":         "event",
-        "value":        {"motion": motion},
+        "action":           "motion",
+        "clientId":         SINRIC_APP_KEY,
+        "createdAt":        int(time.time()),
+        "deviceAttributes": [],
+        "deviceId":         device_id,
+        "reachability":     True,
+        "type":             "event",
+        "value":            {"motion": motion},
     }
     message = json.dumps({
         "payloadVersion":   2,
