@@ -165,8 +165,8 @@ _sinric_lock = threading.Lock()
 
 
 def _sinric_sign(payload_dict):
-    # Sin sort_keys — SinricPro firma en orden de inserción, igual que el SDK oficial
-    payload_str = json.dumps(payload_dict, separators=(",", ":"))
+    # Separadores por defecto (con espacios) igual que el SDK oficial de SinricPro
+    payload_str = json.dumps(payload_dict)
     return _hmac.new(
         SINRIC_APP_SECRET.encode(),
         payload_str.encode(),
